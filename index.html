@@ -49,7 +49,7 @@ Promise.all([getJSON('data/grid.json'), getJSON('data/districts.geojson')]).then
   const index = new Map();
   for (let k = 0; k < C.length; k += 4) index.set(key(C[k], C[k + 1]), k);
 
-  let threshold = 10, highlight = true;
+  let threshold = 10, highlight = true, onlyLow = false;
 
   const BREAKS = [1, 2, 5, 10, 25, 50, 100];
   const COLS = ['#fff7bc', '#fee391', '#fec44f', '#fe9929', '#ec7014', '#cc4c02', '#8c2d04'];
@@ -111,7 +111,7 @@ Promise.all([getJSON('data/grid.json'), getJSON('data/districts.geojson')]).then
       let cellPx = null;
       for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
         const k = index.get(key(i, j));
-        if (k === undefined) continue;
+        if (k === undefined || (onlyLow && C[k + 2] >= threshold)) continue;
         const q = [px(i, j), px(i + 1, j), px(i + 1, j + 1), px(i, j + 1)];
         if (cellPx === null) cellPx = Math.hypot(q[1][0] - q[0][0], q[1][1] - q[0][1]);
         path(q);
@@ -177,6 +177,7 @@ Promise.all([getJSON('data/grid.json'), getJSON('data/districts.geojson')]).then
       COLS.map((c, x) => '<div><i style="background:' + c + '"></i>' + LABELS[x] + '</div>').join('') + '</div>' +
       '<div class="sec"><h4>Under-sampled cells</h4>' +
       '<label><input type="checkbox" id="hl" checked> Highlight cells with fewer than x lists</label>' +
+      '<label><input type="checkbox" id="only"> Show only these cells</label>' +
       '<div class="thr"><input type="range" id="thr" min="1" max="100" value="10"><input type="number" id="thrNum" min="1" value="10"></div>' +
       '<div id="stats" class="muted"></div>' +
       '<button id="dl">Download KML</button></div>';
@@ -216,6 +217,7 @@ Promise.all([getJSON('data/grid.json'), getJSON('data/districts.geojson')]).then
   $('thr').addEventListener('input', e => setThreshold(e.target.value));
   $('thrNum').addEventListener('input', e => setThreshold(e.target.value));
   $('hl').addEventListener('change', e => { highlight = e.target.checked; redraw(); });
+  $('only').addEventListener('change', e => { onlyLow = e.target.checked; redraw(); });
   $('lbl').addEventListener('change', e => { labelsOn = e.target.checked; syncLabels(); });
   map.on('zoomend', syncLabels);
 
