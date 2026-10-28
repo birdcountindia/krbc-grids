@@ -165,7 +165,7 @@ function load(): array {
 
 // Write a new copy, then swap it in, so a failed write never leaves a broken file
 function save(array $db): void {
-    $tmp = DATA_FILE . '.tmp';
+    $tmp = __DIR__ . '/krbc-data.tmp.php';  // also starts with the exit line, so it can't be read either
     $json = json_encode($db, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if (file_put_contents($tmp, DATA_HEADER . $json) === false || !rename($tmp, DATA_FILE)) {
         respond(fail('The reservation could not be saved. Check that the folder is writable.'));

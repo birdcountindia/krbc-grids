@@ -1,0 +1,5 @@
+# Apache: hide the folder listing and block the data files completely
+Options -Indexes
+<FilesMatch "^krbc-data">
+  Require all denied
+</FilesMatch>
