@@ -7,64 +7,139 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.0/proj4.js"></script>
+<script src="config.js"></script>
 <style>
   html, body, #map { height: 100%; margin: 0; }
   body { font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; color: #1f2937; }
   .panel { background: #fff; padding: 10px 12px; border-radius: 6px;
-           box-shadow: 0 1px 5px rgba(0,0,0,.35); width: 240px; max-height: 85vh; overflow-y: auto; }
+           box-shadow: 0 1px 5px rgba(0,0,0,.35); width: 250px; max-height: 85vh; overflow-y: auto; }
   .panel h3 { margin: 0 0 6px; font-size: 15px; }
   .panel h4 { margin: 0 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #6b7280; }
   .panel label { display: block; margin: 2px 0; cursor: pointer; }
   .panel .sec { margin-top: 10px; border-top: 1px solid #e5e7eb; padding-top: 8px; }
-  .legend div { margin: 1px 0; }
-  .legend i { display: inline-block; width: 14px; height: 12px; margin-right: 6px; vertical-align: -1px; border: 1px solid #9ca3af; }
+  .panel a { color: #1d4ed8; cursor: pointer; text-decoration: underline; }
   .muted { color: #6b7280; font-size: 12px; }
-  .thr { display: flex; align-items: center; gap: 6px; }
-  .thr input[type=range] { flex: 1; }
-  .thr input[type=number] { width: 58px; }
+  .key div { margin: 1px 0; font-size: 12px; }
+  .key i { display: inline-block; width: 14px; height: 12px; margin-right: 6px; vertical-align: -1px; }
+  select { width: 100%; padding: 4px; font: inherit; margin: 2px 0 4px; }
   button { width: 100%; padding: 6px; margin-top: 6px; cursor: pointer; border: 1px solid #1d4ed8;
            background: #1d4ed8; color: #fff; border-radius: 4px; font: inherit; }
   button:disabled { opacity: .6; cursor: default; }
+  button.alt { background: #fff; color: #1d4ed8; }
+  .popbtns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .popbtns button { width: auto; margin: 0; padding: 4px 10px; }
+  .popmsg { margin-top: 6px; font-size: 12px; color: #b91c1c; }
   .dlabel { font-weight: 600; font-size: 11px; color: #111; white-space: nowrap;
             text-shadow: 0 0 3px #fff, 0 0 3px #fff; transform: translate(-50%, -50%); }
-  @media (max-width: 600px) { .panel { width: 200px; } }
+  #login { position: fixed; inset: 0; z-index: 2000; display: none; align-items: center; justify-content: center;
+           padding: 16px; background: rgba(17,24,39,.55); }
+  #login.open { display: flex; }
+  #login form { background: #fff; border-radius: 8px; padding: 18px 20px; width: 100%; max-width: 360px;
+                box-shadow: 0 8px 30px rgba(0,0,0,.3); }
+  #login h2 { margin: 0 0 6px; font-size: 17px; }
+  #login label { display: block; margin-top: 12px; font-weight: 600; font-size: 12px; }
+  #login input { width: 100%; box-sizing: border-box; padding: 7px 8px; margin-top: 3px; font: inherit;
+                 border: 1px solid #d1d5db; border-radius: 4px; }
+  #login .hint { font-size: 12px; color: #6b7280; margin-top: 3px; }
+  #login .err { min-height: 1em; margin-top: 10px; font-size: 12px; color: #b91c1c; }
+  #login .skip { background: none; border: none; color: #4b5563; text-decoration: underline; }
+  @media (max-width: 600px) { .panel { width: 210px; } }
 </style>
 </head>
 <body>
 <div id="map"></div>
+<div id="login" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+  <form id="loginForm">
+    <h2 id="loginTitle">KRBC grid sign-in</h2>
+    <div class="hint">Sign in to reserve cells you plan to survey. Use the same name and eBird profile ID next time to pick up where you left off.</div>
+    <label for="lName">Your name</label>
+    <input id="lName" autocomplete="name" maxlength="60" required>
+    <label for="lProfile">eBird profile ID</label>
+    <input id="lProfile" maxlength="200" required placeholder="e.g. MjYxNjIwMg">
+    <div class="hint">The last part of your eBird profile link, ebird.org/profile/<b>ID</b>. You can paste the whole link.</div>
+    <div id="lUserWrap" hidden>
+      <label for="lUser">Username</label>
+      <input id="lUser" maxlength="30">
+      <div class="hint">This is what others see next to your cells.</div>
+    </div>
+    <div id="lErr" class="err" role="alert"></div>
+    <button type="submit" id="lGo">Sign in</button>
+    <button type="button" class="skip" id="lSkip">Just browse the map</button>
+  </form>
+</div>
 <script>
-// Data files are written by krbc-grids.R
+// Grid data files are written by krbc-grids.R. Sign-ins and reservations are
+// kept in a Google Sheet through the Apps Script web app in backend/.
+const BACKEND = window.KRBC_BACKEND || '';
+const MAX_PER_CELL = 3, MAX_PER_USER = 50;
+
 const getJSON = url => fetch(url).then(r => {
   if (!r.ok) throw new Error(url + ': HTTP ' + r.status);
   return r.json();
 });
+// Plain-text POST avoids a CORS preflight, which Apps Script can't answer
+const api = body => fetch(BACKEND, { method: 'POST', body: JSON.stringify(body) }).then(r => {
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+});
+const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const saved = {
+  get() { try { return JSON.parse(localStorage.getItem('krbc-user')); } catch (e) { return null; } },
+  set(v) { try { v ? localStorage.setItem('krbc-user', JSON.stringify(v)) : localStorage.removeItem('krbc-user'); } catch (e) {} }
+};
+const $ = id => document.getElementById(id);
+
 Promise.all([getJSON('data/grid.json'), getJSON('data/districts.geojson')]).then(([DATA, DISTRICT_GEO]) => {
   proj4.defs('UTM', DATA.proj);
   const fwd = proj4('WGS84', 'UTM'), inv = proj4('UTM', 'WGS84');
   const OX = DATA.origin[0], OY = DATA.origin[1], S = DATA.size, KM = S / 1000;
   const key = (i, j) => (i + 50000) * 100000 + (j + 50000);
 
-  // Cells are a flat [i, j, lists, district, ...] array, indexed by (i, j)
-  const C = DATA.cells, NCELLS = C.length / 4;
+  // Cells are a flat [i, j, lists, district, cell no, ...] array, indexed by (i, j)
+  const C = DATA.cells;
   const index = new Map();
-  for (let k = 0; k < C.length; k += 4) index.set(key(C[k], C[k + 1]), k);
-
-  let threshold = 10, highlight = true, onlyLow = false;
-
-  const BREAKS = [1, 2, 5, 10, 25, 50, 100];
-  const COLS = ['#fff7bc', '#fee391', '#fec44f', '#fe9929', '#ec7014', '#cc4c02', '#8c2d04'];
-  const LABELS = ['1', '2–4', '5–9', '10–24', '25–49', '50–99', '100+'];
-  const HL = '#1d4ed8';
-  function colour(n) {
-    if (n === 0) return null;
-    let c = COLS[0];
-    for (let b = 0; b < BREAKS.length; b++) if (n >= BREAKS[b]) c = COLS[b];
-    return c;
-  }
+  for (let k = 0; k < C.length; k += 5) index.set(key(C[k], C[k + 1]), k);
 
   const cornerLL = (i, j) => inv.forward([OX + i * S, OY + j * S]); // [lon, lat]
-  const cellName = (i, j) => { const p = cornerLL(i, j); return p[1].toFixed(4) + '_' + p[0].toFixed(4); };
-  const districtName = d => d >= 0 ? DATA.districts[d - 1] : 'Outside Karnataka';
+  const centreLL = (i, j) => inv.forward([OX + (i + 0.5) * S, OY + (j + 0.5) * S]);
+  const districtName = k => DATA.districts[C[k + 3] - 1];
+  const cellName = k => districtName(k) + '_' + C[k + 4];
+  // Reservations refer to cells by grid indices, which stay fixed when the data is refreshed
+  const cellKey = k => C[k] + '_' + C[k + 1];
+
+  // State: signed-in person, reservations (cell key -> [{ user, status }]),
+  // district filter (0 = all) and view ('all', 'mine' or 'user:<username>')
+  let me = null, reservations = new Map(), district = 0, view = 'all';
+
+  const resOf = k => reservations.get(cellKey(k)) || [];
+  const myRes = k => me ? resOf(k).find(r => r.user === me.username) : undefined;
+  const viewUser = () => view === 'mine' ? (me && me.username) : view.startsWith('user:') ? view.slice(5) : null;
+  const volunteers = () => {
+    const u = new Set();
+    reservations.forEach(rs => rs.forEach(r => u.add(r.user)));
+    return [...u].sort((a, b) => a.localeCompare(b));
+  };
+  const myActive = () => {
+    let n = 0;
+    if (me) reservations.forEach(rs => rs.forEach(r => { if (r.user === me.username && r.status !== 'done') n++; }));
+    return n;
+  };
+  const shown = k => {
+    if (district !== 0 && C[k + 3] !== district) return false;
+    if (view === 'all') return C[k + 2] === 0;
+    const u = viewUser();
+    return !!u && resOf(k).some(r => r.user === u);
+  };
+
+  const FILL = { open: 'rgba(220,38,38,.4)', some: 'rgba(245,158,11,.55)',
+                 full: 'rgba(107,114,128,.55)', done: 'rgba(22,163,74,.5)' };
+  const MINE = '#1d4ed8';
+  const fillOf = k => {
+    const rs = resOf(k);
+    if (rs.some(r => r.status === 'done')) return FILL.done;
+    if (rs.length >= MAX_PER_CELL) return FILL.full;
+    return rs.length ? FILL.some : FILL.open;
+  };
 
   // Map and base layers
   const map = L.map('map').fitBounds(DATA.bounds);
@@ -105,38 +180,46 @@ Promise.all([getJSON('data/grid.json'), getJSON('data/districts.geojson')]).then
         }
         return v;
       };
-      const path = q => { ctx.beginPath(); ctx.moveTo(q[0][0], q[0][1]); for (let t = 1; t < 4; t++) ctx.lineTo(q[t][0], q[t][1]); ctx.closePath(); };
+      const path = q => {
+        ctx.beginPath();
+        ctx.moveTo(q[0][0], q[0][1]);
+        for (let t = 1; t < 4; t++) ctx.lineTo(q[t][0], q[t][1]);
+        ctx.closePath();
+      };
 
-      const low = [];
-      let cellPx = null;
+      const mine = [];
+      let big = false;
+      ctx.strokeStyle = 'rgba(55,65,81,.6)';
+      ctx.lineWidth = 0.6;
       for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
         const k = index.get(key(i, j));
-        if (k === undefined || (onlyLow && C[k + 2] >= threshold)) continue;
+        if (k === undefined || !shown(k)) continue;
         const q = [px(i, j), px(i + 1, j), px(i + 1, j + 1), px(i, j + 1)];
-        if (cellPx === null) cellPx = Math.hypot(q[1][0] - q[0][0], q[1][1] - q[0][1]);
+        big = Math.hypot(q[1][0] - q[0][0], q[1][1] - q[0][1]) >= 6;
         path(q);
-        const col = colour(C[k + 2]);
-        if (col) { ctx.globalAlpha = 0.7; ctx.fillStyle = col; ctx.fill(); ctx.globalAlpha = 1; }
-        if (cellPx >= 6) { ctx.lineWidth = 0.5; ctx.strokeStyle = 'rgba(55,65,81,.45)'; ctx.stroke(); }
-        if (highlight && C[k + 2] < threshold) low.push(q);
+        ctx.fillStyle = fillOf(k);
+        ctx.fill();
+        if (big) ctx.stroke();
+        if (myRes(k)) mine.push(q);
       }
-      // Cells below the threshold: blue outline, or blue fill when cells are too small to outline
-      low.forEach(q => {
-        path(q);
-        if (cellPx >= 6) { ctx.lineWidth = 1.6; ctx.strokeStyle = HL; ctx.stroke(); }
-        else { ctx.globalAlpha = 0.45; ctx.fillStyle = HL; ctx.fill(); ctx.globalAlpha = 1; }
-      });
+      // The signed-in person's cells get a blue outline
+      ctx.strokeStyle = MINE;
+      ctx.lineWidth = big ? 2.2 : 1.2;
+      mine.forEach(q => { path(q); ctx.stroke(); });
       return tile;
     }
   });
   const grid = new GridLayer({ pane: 'grid', updateWhenZooming: false }).addTo(map);
 
-  // Districts and their names
-  const districts = L.geoJSON(DISTRICT_GEO, {
-    style: { color: '#111827', weight: 1.3, fill: false }, interactive: false }).addTo(map);
+  // Districts and their names; the selected district is drawn heavier
+  const districtStyle = f => {
+    const on = district === 0 || f.properties['DISTRICT.NAME'] === DATA.districts[district - 1];
+    return { color: on ? '#111827' : '#9ca3af', weight: district && on ? 2.5 : 1.2, fill: false };
+  };
+  const districts = L.geoJSON(DISTRICT_GEO, { style: districtStyle, interactive: false }).addTo(map);
   const labels = L.layerGroup(DATA.labels.map(d => L.marker([d.lat, d.lon], {
     interactive: false, keyboard: false,
-    icon: L.divIcon({ className: '', html: '<div class="dlabel">' + d.name + '</div>', iconSize: [0, 0] }) })));
+    icon: L.divIcon({ className: '', html: '<div class="dlabel">' + esc(d.name) + '</div>', iconSize: [0, 0] }) })));
   let labelsOn = true;
   const syncLabels = () => {
     const show = labelsOn && map.getZoom() >= 8;
@@ -148,38 +231,95 @@ Promise.all([getJSON('data/grid.json'), getJSON('data/districts.geojson')]).then
                    { 'Grid cells': grid, 'District boundaries': districts }).addTo(map);
   L.control.scale({ imperial: false }).addTo(map);
 
-  // Click a cell for its details
-  const sel = L.polygon([], { color: '#dc2626', weight: 2.5, fill: false, interactive: false }).addTo(map);
+  // Cell popup, with reservation buttons
+  const sel = L.polygon([], { color: '#111827', weight: 2.5, fill: false, interactive: false }).addTo(map);
+  const popup = L.popup({ minWidth: 200 });
+  let popupCell = null;
+
+  function popupHtml(k, msg) {
+    const i = C[k], j = C[k + 1], c = centreLL(i, j), rs = resOf(k), mine = myRes(k);
+    let h = '<b>' + esc(cellName(k)) + '</b><br>District: ' + esc(districtName(k)) +
+      '<br>Centroid: ' + c[1].toFixed(5) + ', ' + c[0].toFixed(5) +
+      '<br>Lists: <b>' + C[k + 2].toLocaleString() + '</b>';
+    if (!BACKEND) return h;
+    h += '<br>Reserved: ' + rs.length + '/' + MAX_PER_CELL +
+      (rs.length ? ' (' + rs.map(r => esc(r.user) + (r.status === 'done' ? ' ✓' : '')).join(', ') + ')' : '');
+    const btns = [];
+    if (!me) btns.push('<button data-act="signin">Sign in to reserve</button>');
+    else if (mine) {
+      btns.push(mine.status === 'done'
+        ? '<button data-act="undone" class="alt">Mark not surveyed</button>'
+        : '<button data-act="done">Mark surveyed</button>');
+      btns.push('<button data-act="release" class="alt">Release</button>');
+    } else if (rs.length >= MAX_PER_CELL) h += '<div class="muted">This cell is fully reserved.</div>';
+    else if (myActive() >= MAX_PER_USER) h += '<div class="muted">You have ' + MAX_PER_USER + ' cells. Release some or mark them surveyed first.</div>';
+    else btns.push('<button data-act="reserve">Reserve this cell</button>');
+    if (btns.length) h += '<div class="popbtns">' + btns.join('') + '</div>';
+    if (msg) h += '<div class="popmsg">' + esc(msg) + '</div>';
+    return h;
+  }
+  function renderPopup(msg) {
+    if (popupCell !== null && map.hasLayer(popup)) popup.setContent(popupHtml(popupCell, msg));
+  }
+
   map.on('click', e => {
     const u = fwd.forward([e.latlng.lng, e.latlng.lat]);
     const i = Math.floor((u[0] - OX) / S), j = Math.floor((u[1] - OY) / S);
     const k = index.get(key(i, j));
+    if (k === undefined || !shown(k) || !map.hasLayer(grid)) return;
+    popupCell = k;
     sel.setLatLngs([[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]].map(([a, b]) => {
       const p = cornerLL(a, b); return [p[1], p[0]]; }));
-    const n = k === undefined ? 0 : C[k + 2];
-    const dist = k === undefined ? 'Outside Karnataka' : districtName(C[k + 3]);
-    L.popup().setLatLng(e.latlng).setContent(
-      '<b>' + cellName(i, j) + '</b><br>District: ' + dist +
-      '<br>Lists: <b>' + n.toLocaleString() + '</b>').openOn(map);
+    popup.setLatLng(e.latlng).setContent(popupHtml(k)).openOn(map);
   });
-  map.on('popupclose', () => sel.setLatLngs([]));
+  map.on('popupclose', () => { popupCell = null; sel.setLatLngs([]); });
+  map.on('popupopen', e => {
+    const el = e.popup.getElement();
+    if (e.popup !== popup || el.dataset.bound) return;
+    el.dataset.bound = '1';
+    el.addEventListener('click', ev => {
+      const b = ev.target.closest('button[data-act]');
+      if (b) b.dataset.act === 'signin' ? openLogin() : cellAction(b.dataset.act);
+    });
+  });
+
+  async function cellAction(act) {
+    const k = popupCell;
+    if (k === null || !me) return;
+    popup.getElement().querySelectorAll('button').forEach(b => { b.disabled = true; });
+    try {
+      const res = await api({ action: act, name: me.name, profileId: me.profileId,
+                              cell: cellKey(k), cellName: cellName(k), district: districtName(k) });
+      if (res.reservations) applyState(res);
+      renderPopup(res.ok ? '' : res.error);
+    } catch (err) {
+      renderPopup('Could not reach the reservation server. Try again.');
+    }
+  }
 
   // Control panel
   const panel = L.control({ position: 'topright' });
   panel.onAdd = () => {
     const d = L.DomUtil.create('div', 'panel');
     d.innerHTML =
-      '<h3>KRBC ' + KM + ' km grid</h3>' +
-      '<div class="muted">' + NCELLS.toLocaleString() + ' cells · data updated ' + DATA.updated + '</div>' +
-      '<label><input type="checkbox" id="lbl" checked> District names</label>' +
-      '<div class="sec legend"><h4>Lists per cell</h4>' +
-      '<div><i style="background:transparent"></i>0</div>' +
-      COLS.map((c, x) => '<div><i style="background:' + c + '"></i>' + LABELS[x] + '</div>').join('') + '</div>' +
-      '<div class="sec"><h4>Under-sampled cells</h4>' +
-      '<label><input type="checkbox" id="hl" checked> Highlight cells with fewer than x lists</label>' +
-      '<label><input type="checkbox" id="only"> Show only these cells</label>' +
-      '<div class="thr"><input type="range" id="thr" min="1" max="100" value="10"><input type="number" id="thrNum" min="1" value="10"></div>' +
+      '<h3>KRBC unsampled cells</h3>' +
+      '<div class="muted">' + KM + ' km cells · data updated ' + DATA.updated + '</div>' +
+      '<div class="sec" id="acct"></div>' +
+      '<div class="sec"><h4>District</h4>' +
+      '<select id="dist"><option value="0">All districts</option>' +
+      DATA.districts.map((n, x) => [n, x + 1]).sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([n, x]) => '<option value="' + x + '">' + esc(n) + '</option>').join('') + '</select>' +
+      (BACKEND ? '<h4 style="margin-top:8px">Show</h4><select id="view"></select>' : '') +
       '<div id="stats" class="muted"></div>' +
+      '<label><input type="checkbox" id="lbl" checked> District names</label></div>' +
+      '<div class="sec key"><h4>Cells</h4>' +
+      '<div><i style="background:' + FILL.open + '"></i>No lists, not reserved</div>' +
+      (BACKEND
+        ? '<div><i style="background:' + FILL.some + '"></i>Reserved by 1–2 people</div>' +
+          '<div><i style="background:' + FILL.full + '"></i>Fully reserved (3 people)</div>' +
+          '<div><i style="background:' + FILL.done + '"></i>Marked surveyed</div>' +
+          '<div><i style="border:2px solid ' + MINE + ';box-sizing:border-box"></i>Your cells</div>'
+        : '') +
       '<button id="dl">Download KML</button></div>';
     L.DomEvent.disableClickPropagation(d);
     L.DomEvent.disableScrollPropagation(d);
@@ -187,68 +327,178 @@ Promise.all([getJSON('data/grid.json'), getJSON('data/districts.geojson')]).then
   };
   panel.addTo(map);
 
-  const $ = id => document.getElementById(id);
-  function countBelow() {
+  const place = () => district ? DATA.districts[district - 1] : 'Karnataka';
+  function countShown() {
     let n = 0;
-    for (let k = 2; k < C.length; k += 4) if (C[k] < threshold) n++;
+    for (let k = 0; k < C.length; k += 5) if (shown(k)) n++;
     return n;
   }
-  function updateText() {
-    const n = countBelow();
-    $('stats').textContent = n.toLocaleString() + ' of ' + NCELLS.toLocaleString() +
-      ' cells have fewer than ' + threshold + ' lists';
+  function statsText(n) {
+    const where = ' in ' + place();
+    if (view === 'all') return n.toLocaleString() + ' unsampled cells' + where;
+    if (view === 'mine') return n + ' of your cells' + where + ' (' + myActive() + '/' + MAX_PER_USER + ' not yet surveyed)';
+    return n + ' cells reserved by ' + viewUser() + where;
+  }
+  function renderAccount() {
+    const el = $('acct');
+    if (!BACKEND) {
+      el.innerHTML = '<span class="muted">Cell reservations are not set up yet.</span>';
+      return;
+    }
+    el.innerHTML = me
+      ? 'Signed in as <b>' + esc(me.username) + '</b> · <a id="out">Sign out</a>'
+      : '<button id="in">Sign in to reserve cells</button>';
+    if (me) $('out').onclick = signOut; else $('in').onclick = openLogin;
+  }
+  function renderViewSelect() {
+    if (!BACKEND) return;
+    const others = volunteers().filter(u => !me || u !== me.username);
+    if (view === 'mine' && !me) view = 'all';
+    if (view.startsWith('user:') && !others.includes(view.slice(5))) view = 'all';
+    $('view').innerHTML = '<option value="all">Unsampled cells</option>' +
+      (me ? '<option value="mine">My cells</option>' : '') +
+      (others.length ? '<optgroup label="Cells reserved by">' +
+        others.map(u => '<option value="user:' + esc(u) + '">' + esc(u) + '</option>').join('') + '</optgroup>' : '');
+    $('view').value = view;
+  }
+  function fitView() {
+    let bounds = L.latLngBounds(DATA.bounds);
+    if (district) districts.eachLayer(l => {
+      if (l.feature.properties['DISTRICT.NAME'] === DATA.districts[district - 1]) bounds = l.getBounds();
+    });
+    if (view !== 'all') {
+      const cells = L.latLngBounds([]);
+      for (let k = 0; k < C.length; k += 5) if (shown(k)) {
+        const a = cornerLL(C[k], C[k + 1]), b = cornerLL(C[k] + 1, C[k + 1] + 1);
+        cells.extend([[a[1], a[0]], [b[1], b[0]]]);
+      }
+      if (cells.isValid()) bounds = cells;
+    }
+    map.fitBounds(bounds, { padding: [20, 20], maxZoom: 11 });
+  }
+  function refresh(fit) {
+    renderAccount();
+    renderViewSelect();
+    districts.setStyle(districtStyle);
+    grid.redraw();
+    const n = countShown();
+    $('stats').textContent = statsText(n);
     $('dl').textContent = 'Download KML: ' + n.toLocaleString() + ' cells';
     $('dl').disabled = n === 0;
+    if (fit) fitView();
+    renderPopup();
   }
-  let pending = false;
-  function redraw() {
-    updateText();
-    if (pending) return;
-    pending = true;
-    requestAnimationFrame(() => { pending = false; grid.redraw(); });
-  }
-  function setThreshold(v) {
-    threshold = Math.max(1, Math.round(+v) || 1);
-    $('thr').value = Math.min(threshold, 100);
-    $('thrNum').value = threshold;
-    redraw();
+  function applyState(s) {
+    reservations = new Map();
+    (s.reservations || []).forEach(r => {
+      if (!reservations.has(r.cell)) reservations.set(r.cell, []);
+      reservations.get(r.cell).push(r);
+    });
+    refresh(false);
   }
 
-  $('thr').addEventListener('input', e => setThreshold(e.target.value));
-  $('thrNum').addEventListener('input', e => setThreshold(e.target.value));
-  $('hl').addEventListener('change', e => { highlight = e.target.checked; redraw(); });
-  $('only').addEventListener('change', e => { onlyLow = e.target.checked; redraw(); });
+  $('dist').addEventListener('change', e => {
+    district = +e.target.value;
+    map.closePopup();
+    // Keep the district in the address so a district view can be shared
+    history.replaceState(null, '', district
+      ? '#' + encodeURIComponent(DATA.districts[district - 1]) : location.pathname + location.search);
+    refresh(true);
+  });
+  if (BACKEND) $('view').addEventListener('change', e => { view = e.target.value; map.closePopup(); refresh(true); });
   $('lbl').addEventListener('change', e => { labelsOn = e.target.checked; syncLabels(); });
   map.on('zoomend', syncLabels);
 
-  // KML of cells with fewer than x lists
-  const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // Sign-in
+  function openLogin() {
+    $('login').classList.add('open');
+    ($('lName').value ? $('lProfile') : $('lName')).focus();
+  }
+  function closeLogin() { $('login').classList.remove('open'); }
+  function handleLogin(res) {
+    if (res.ok) {
+      me = { name: res.user.name, profileId: res.user.profileId, username: res.user.username };
+      saved.set({ name: me.name, profileId: me.profileId });
+      $('lErr').textContent = '';
+      $('lUserWrap').hidden = true;
+      closeLogin();
+      applyState(res);
+      return true;
+    }
+    if (res.needUsername) { $('lUserWrap').hidden = false; $('lUser').focus(); }
+    $('lErr').textContent = res.error || 'Sign-in failed.';
+    return false;
+  }
+  function signOut() {
+    me = null;
+    saved.set(null);
+    if (view === 'mine') view = 'all';
+    refresh(false);
+  }
+  $('lSkip').addEventListener('click', closeLogin);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLogin(); });
+  $('loginForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    $('lGo').disabled = true;
+    $('lErr').textContent = '';
+    try {
+      handleLogin(await api({ action: 'login', name: $('lName').value, profileId: $('lProfile').value,
+                              username: $('lUserWrap').hidden ? '' : $('lUser').value }));
+    } catch (err) {
+      $('lErr').textContent = 'Could not reach the reservation server. Try again.';
+    }
+    $('lGo').disabled = false;
+  });
+
+  // KML of the cells on show, sorted by district, then cell number
   $('dl').addEventListener('click', () => {
+    const who = viewUser();
+    const title = (view === 'all' ? 'unsampled cells' : 'cells reserved by ' + who) + ', ' + place();
     const out = ['<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document>' +
-      '<name>KRBC ' + KM + ' km cells with fewer than ' + threshold + ' lists</name>' +
-      '<Style id="cell"><LineStyle><color>ffd84e1d</color><width>1.5</width></LineStyle>' +
-      '<PolyStyle><color>40d84e1d</color></PolyStyle></Style>\n'];
-    for (let k = 0; k < C.length; k += 4) {
-      if (C[k + 2] >= threshold) continue;
-      const i = C[k], j = C[k + 1];
+      '<name>KRBC ' + KM + ' km ' + esc(title) + '</name>' +
+      '<Style id="cell"><LineStyle><color>ff1c1cb9</color><width>1.5</width></LineStyle>' +
+      '<PolyStyle><color>662626dc</color></PolyStyle></Style>\n'];
+    for (let k = 0; k < C.length; k += 5) {
+      if (!shown(k)) continue;
+      const i = C[k], j = C[k + 1], c = centreLL(i, j), rs = resOf(k);
       const ring = [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1], [i, j]].map(([a, b]) => {
         const p = cornerLL(a, b); return p[0].toFixed(6) + ',' + p[1].toFixed(6) + ',0'; }).join(' ');
-      out.push('<Placemark><name>' + cellName(i, j) + '</name><styleUrl>#cell</styleUrl><ExtendedData>' +
+      out.push('<Placemark><name>' + esc(cellName(k)) + '</name><styleUrl>#cell</styleUrl><ExtendedData>' +
+        '<Data name="district"><value>' + esc(districtName(k)) + '</value></Data>' +
+        '<Data name="cell_no"><value>' + C[k + 4] + '</value></Data>' +
         '<Data name="lists"><value>' + C[k + 2] + '</value></Data>' +
-        '<Data name="district"><value>' + esc(districtName(C[k + 3])) + '</value></Data></ExtendedData>' +
-        '<Polygon><outerBoundaryIs><LinearRing><coordinates>' + ring +
+        '<Data name="centroid_lat"><value>' + c[1].toFixed(5) + '</value></Data>' +
+        '<Data name="centroid_lon"><value>' + c[0].toFixed(5) + '</value></Data>' +
+        (BACKEND ? '<Data name="reserved_by"><value>' + esc(rs.map(r => r.user).join(', ')) + '</value></Data>' +
+                   '<Data name="surveyed_by"><value>' + esc(rs.filter(r => r.status === 'done').map(r => r.user).join(', ')) + '</value></Data>' : '') +
+        '</ExtendedData><Polygon><outerBoundaryIs><LinearRing><coordinates>' + ring +
         '</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>\n');
     }
     out.push('</Document></kml>');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob(out, { type: 'application/vnd.google-earth.kml+xml' }));
-    a.download = 'krbc-grid-' + KM + 'km-under-' + threshold + '-lists.kml';
+    a.download = ('krbc-' + KM + 'km-' + (view === 'all' ? 'unsampled' : who) + '-' + place())
+      .replace(/[^A-Za-z0-9._-]+/g, '-') + '.kml';
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   });
 
-  updateText();
+  // Start: district from the address, then sign in (silently if this browser remembers someone)
+  district = DATA.districts.indexOf(decodeURIComponent(location.hash.slice(1))) + 1;
+  $('dist').value = district;
+  refresh(true);
   syncLabels();
+  if (BACKEND) {
+    const prev = saved.get();
+    if (prev) { $('lName').value = prev.name || ''; $('lProfile').value = prev.profileId || ''; }
+    (prev ? api(Object.assign({ action: 'login' }, prev)).then(res => { if (!handleLogin(res)) openLogin(); })
+          : api({ action: 'state' }).then(res => { applyState(res); openLogin(); }))
+      .catch(() => { $('acct').innerHTML = '<span class="muted">Could not reach the reservation server.</span>'; });
+    // Pick up other people's reservations
+    setInterval(() => {
+      if (!document.hidden) api({ action: 'state' }).then(applyState).catch(() => {});
+    }, 60000);
+  }
 }).catch(err => {
   document.getElementById('map').innerHTML =
     '<p style="padding:16px">Could not load the grid data (' + err.message + ').</p>';
